@@ -3,6 +3,7 @@ import { SetupSection, type SectionStatus } from "./SetupSection";
 import { ClaudeLoginStep } from "./ClaudeLoginStep";
 import { GitHubLoginStep } from "./GitHubLoginStep";
 import { EnvSetupStep } from "./EnvSetupStep";
+import { AristotleKeyStep } from "./AristotleKeyStep";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { Spinner } from "../components/Spinner";
@@ -166,7 +167,6 @@ export function SetupDashboard({
           title="Physlib workspace"
           description="Installs Lean and the other tools, then downloads and builds Physlib."
           status={envStatus}
-          isLast
           disabledReason="Sign in to Claude and GitHub above first."
         >
           {healthLoading ? (
@@ -196,6 +196,19 @@ export function SetupDashboard({
               }}
             />
           ) : null}
+        </SetupSection>
+
+        {/* Optional, and deliberately not part of `allReady` - it must never
+            block onboarding. Rendered "active" regardless of the others so a
+            key can be added or swapped at any point from Settings. */}
+        <SetupSection
+          icon={<SparkIcon />}
+          title="Aristotle (optional)"
+          description="Harmonic's Lean prover. Add a key to let it write the proofs instead of Claude."
+          status="active"
+          isLast
+        >
+          <AristotleKeyStep apiKey={config.aristotleApiKey} onChange={(key) => persist({ aristotleApiKey: key })} />
         </SetupSection>
       </div>
     </div>

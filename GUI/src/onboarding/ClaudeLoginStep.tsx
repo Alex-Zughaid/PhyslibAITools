@@ -31,6 +31,10 @@ type FallbackPhase = "hidden" | "waiting" | "verifying" | "fallback-error";
  * open-a-terminal-and-paste-the-token flow there. The same fallback is also
  * offered on Windows itself if the automatic flow ever fails there too. */
 export function ClaudeLoginStep({ onDone }: { onDone: (token: string | null) => void }) {
+  // When developing or testing, set VITE_SKIP_CLAUDE_AUTH=true to bypass
+  // real Claude sign-in and immediately continue with a fake token.
+  // This is intentionally limited to the frontend for testing convenience.
+  const SKIP_CLAUDE_AUTH = (import.meta as any).env?.VITE_SKIP_CLAUDE_AUTH === "true" || (import.meta as any).env?.VITE_SKIP_AUTH === "true";
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [signInUrl, setSignInUrl] = useState<string | null>(null);
@@ -59,6 +63,14 @@ export function ClaudeLoginStep({ onDone }: { onDone: (token: string | null) => 
       .then((p) => setAutomaticAvailable(p === "windows"))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (SKIP_CLAUDE_AUTH) {
+      // Defer slightly so parent components finish mounting.
+      const t = setTimeout(() => onDone("sk-test-claude-token"), 50);
+      return () => clearTimeout(t);
+    }
+  }, [SKIP_CLAUDE_AUTH, onDone]);
 
   useEffect(() => {
     return () => {

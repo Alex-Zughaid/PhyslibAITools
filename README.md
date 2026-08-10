@@ -73,6 +73,62 @@ Or, if you've already cloned this repo:
 ./Scripts/physlib-auto-task.sh --manual    # interactive: pick a task, confirm before pushing
 ```
 
+#### Directing the run
+
+By default the agent picks its own target — which theorem to golf, which file to
+touch. Pass `--direct` (or `-d`, or set `DIRECTIONS`) to point it somewhere
+specific instead:
+
+```bash
+./Scripts/physlib-auto-task.sh Golf --direct "golf inner_mul_le_norm in Physlib/Analysis/Inner.lean"
+```
+
+The text is prepended to the task prompt and explicitly overrides the task's own
+"choose a target" instruction. Leave it off and nothing changes — the run is
+exactly as autonomous as it has always been. In `--manual` mode you're offered
+the prompt if you didn't pass the flag; auto mode never asks.
+
+#### Using Aristotle instead of Claude to prove things
+
+[Aristotle](https://aristotle.harmonic.fun) is Harmonic's Lean 4 prover, and is
+considerably better than Claude at closing Lean goals. Set an API key (sign up at
+aristotle.harmonic.fun, then Dashboard → API Keys) to make it available:
+
+```bash
+export ARISTOTLE_API_KEY='...'
+```
+
+With a key set, there are two ways it gets used:
+
+1. **Claude delegates to it.** Every task run is told the prover exists and how
+   to reach it (`Scripts/aristotle-prove.sh`), so Claude navigates the repo,
+   stubs the proof to `sorry`, hands it over, reviews the returned diff, applies
+   it, and builds. `Tasks/AristotleSorry.md` is a task built entirely around this
+   flow. Nothing about the PR pipeline changes.
+2. **Aristotle alone, no agent in the loop.** `--prover aristotle` skips Claude
+   entirely: it picks targets (from `--direct`, else files still containing a
+   `sorry`), hands them over, applies what comes back, verifies with `lake build`,
+   and composes the PR text from the diff.
+
+   ```bash
+   ./Scripts/physlib-auto-task.sh --prover aristotle --direct "prove the sorry in Physlib/Mechanics/Foo.lean"
+   ```
+
+   Because no agent is watching, the build is the only gate: if it fails, the run
+   stops and no PR is opened.
+
+`Scripts/aristotle-prove.sh` can also be run on its own. It stages only the files
+you name (never the whole checkout — a built Physlib carries a multi-GB `.lake/`),
+prints a unified diff of what Aristotle returned, and by default writes nothing to
+your working tree:
+
+```bash
+./Scripts/aristotle-prove.sh Physlib/Mechanics/Foo.lean --repo-root .
+```
+
+Runs can be slow — a published case study reports ~8 hours on a hard problem — so
+it streams progress and cancels the remote task if you interrupt it.
+
 Run it from wherever you want the `physlib-auto/` checkout to be created. If a
 `./physlib-auto` folder already exists in the current directory it is reused
 instead of cloning again; otherwise a fresh fork is cloned into it. The script
@@ -129,6 +185,9 @@ Auto mode requires a bit of setup, since nothing can prompt you:
 | --- | --- |
 | `TASK` | Which task to run (e.g. `Golf`); defaults to `Golf` (in `--manual` mode you're asked). |
 | `AUTO` | Auto mode, on by default (`AUTO=1`). Set `AUTO=0` (or pass `--manual` / `-i`) for an interactive run. |
+| `DIRECTIONS` | Free-text steering for this run; same as `--direct` / `-d`. Empty (the default) means the agent chooses its own target. |
+| `PROVER` | `claude` (default, agentic) or `aristotle` (direct, no agent in the proof loop); same as `--prover`. |
+| `ARISTOTLE_API_KEY` | Aristotle key from https://aristotle.harmonic.fun (Dashboard → API Keys). Enables `--prover aristotle`, and lets Claude delegate proofs to Aristotle. |
 | `MAX_OPEN_AUTO_PRS` | Cap on concurrent open automated PRs before the script refuses to run (default `10`). |
 | `NO_COLOR` | Disable coloured output. |
 | `FORCE_COLOR` | Force coloured output on even when stdout isn't detected as a terminal. |

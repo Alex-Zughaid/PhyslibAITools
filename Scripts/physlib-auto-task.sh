@@ -234,16 +234,47 @@ AUTO="${AUTO:-1}"
 TASK_GIVEN=0
 [ -n "${TASK:-}" ] && TASK_GIVEN=1
 TASK="${TASK:-Golf}"
+# Optional free-text steering for this one run: "golf the proof of foo_bar in
+# Physlib/Mechanics/X.lean". Empty (the default) leaves the task prompt exactly
+# as it is, so the agent picks its own target the way it always has.
+DIRECTIONS="${DIRECTIONS:-}"
+DIRECTIONS_GIVEN=0
+[ -n "$DIRECTIONS" ] && DIRECTIONS_GIVEN=1
+# Which prover carries out the work: "claude" (the agentic default) or
+# "aristotle" (Harmonic's Lean prover, driven directly with no agent in the
+# proof loop - see step 6b). Requires ARISTOTLE_API_KEY.
+PROVER="${PROVER:-claude}"
 WANT_HELP=0
-for arg in "$@"; do
-  case "$arg" in
+while [ $# -gt 0 ]; do
+  case "$1" in
     --help|-h)                 WANT_HELP=1 ;;
     --auto|-y|--yes)           AUTO=1 ;;
     --manual|--interactive|-i) AUTO=0 ;;
-    -*)                        warn "Ignoring unknown flag: $arg" ;;
-    *)                         TASK="$arg"; TASK_GIVEN=1 ;;
+    --direct|-d)               shift; [ $# -gt 0 ] || die "--direct needs some text, e.g. --direct 'golf inner_mul_le_norm'"
+                               DIRECTIONS="$1"; DIRECTIONS_GIVEN=1 ;;
+    --direct=*)                DIRECTIONS="${1#*=}"; DIRECTIONS_GIVEN=1 ;;
+    --prover)                  shift; [ $# -gt 0 ] || die "--prover needs a value: claude or aristotle"
+                               PROVER="$1" ;;
+    --prover=*)                PROVER="${1#*=}" ;;
+    -*)                        warn "Ignoring unknown flag: $1" ;;
+    *)                         TASK="$1"; TASK_GIVEN=1 ;;
   esac
+  shift
 done
+
+case "$PROVER" in
+  claude|aristotle) ;;
+  *) die "Unknown --prover '$PROVER'. Use 'claude' (the default) or 'aristotle'." ;;
+esac
+
+# Fail here rather than after a 10-minute Mathlib build. (Only the Aristotle
+# prover *requires* a key; the Claude path just gains the option to delegate
+# proofs when one happens to be set.)
+if [ "$PROVER" = "aristotle" ] && [ -z "${ARISTOTLE_API_KEY:-}" ]; then
+  die "--prover aristotle needs an Aristotle API key.
+Get one at https://aristotle.harmonic.fun (Dashboard -> API Keys), then:
+  export ARISTOTLE_API_KEY='...'"
+fi
 
 # The upstream repo to fork/build/PR-against, the local checkout folder, and the
 # task prompt are all decided by resolve_task (below) once the task is known:
@@ -480,6 +511,31 @@ resolve_task() {
   return 1
 }
 
+# Locate Scripts/aristotle-prove.sh - the wrapper that hands Lean files to
+# Aristotle - and leave an ABSOLUTE path in ARISTOTLE_HELPER (absolute because
+# it's run from inside the checkout, not from here). Same find-locally-else-fetch
+# approach as resolve_task, so a `curl | bash` run works too. Returns non-zero if
+# it can't be found or downloaded.
+ARISTOTLE_HELPER=""
+resolve_aristotle_helper() {
+  local d f body tmp
+  for d in "${SCRIPT_DIR:-}" "${SCRIPT_DIR:+$SCRIPT_DIR/../Scripts}" "./Scripts" "."; do
+    f="${d:+$d/aristotle-prove.sh}"
+    if [ -n "$f" ] && [ -f "$f" ]; then
+      ARISTOTLE_HELPER="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+      chmod +x "$ARISTOTLE_HELPER" 2>/dev/null || true
+      return 0
+    fi
+  done
+  body="$(curl -fsSL --max-time 15 "$REPO_RAW_BASE/Scripts/aristotle-prove.sh" 2>/dev/null || true)"
+  if [ -n "$body" ]; then
+    tmp="$(mktemp)"; printf '%s' "$body" >"$tmp"; chmod +x "$tmp"; CLEANUP_FILES+=("$tmp")
+    ARISTOTLE_HELPER="$tmp"
+    return 0
+  fi
+  return 1
+}
+
 # List the task names we can see in a local Tasks/ directory (one per line), or
 # nothing if there's no local Tasks/ (e.g. piped from curl). Used by choose_task and
 # by the help text.
@@ -589,6 +645,12 @@ ${C_CYAN}${HDR} Usage${C_RESET}
   ${C_DIM}# interactive: pick a task, review & confirm before pushing${C_RESET}
   ./$SELF_NAME --manual
 
+  ${C_DIM}# point the agent at one specific proof${C_RESET}
+  ./$SELF_NAME Golf --direct "golf inner_mul_le_norm in Physlib/Analysis/Inner.lean"
+
+  ${C_DIM}# let Aristotle close the sorries directly, with no agent in the loop${C_RESET}
+  ./$SELF_NAME AristotleSorry --prover aristotle
+
   ${C_DIM}# one-liner straight from GitHub (automatic, default task)${C_RESET}
   curl -fsSL $SELF_RAW_URL | bash
 
@@ -597,10 +659,21 @@ ${C_CYAN}${HDR} Options${C_RESET}
                   confirm before anything is pushed.
   ${C_BOLD}--auto${C_RESET}, ${C_BOLD}-y${C_RESET}      Unattended (the default): no prompts, PR pushed for
                   you. Needs GitHub and Claude Code already signed in.
+  ${C_BOLD}--direct${C_RESET} ${C_BOLD}TEXT${C_RESET}, ${C_BOLD}-d${C_RESET}  Steer this run: free-text directions ("golf the proof
+                  of foo in Bar.lean") prepended to the task prompt. Omit it
+                  and the agent picks its own target, as usual.
+  ${C_BOLD}--prover${C_RESET} ${C_BOLD}NAME${C_RESET}   Who does the proving: ${C_BOLD}claude${C_RESET} (default, agentic) or
+                  ${C_BOLD}aristotle${C_RESET} (Harmonic's Lean prover, driven directly -
+                  needs ${C_BOLD}ARISTOTLE_API_KEY${C_RESET}).
   ${C_BOLD}--help${C_RESET}, ${C_BOLD}-h${C_RESET}      Show this help and exit.
 
 ${C_CYAN}${HDR} Environment${C_RESET}
   ${C_BOLD}TASK${C_RESET}=Golf             Task to run (same as the first argument).
+  ${C_BOLD}DIRECTIONS${C_RESET}=...        Same as ${C_BOLD}--direct${C_RESET}.
+  ${C_BOLD}PROVER${C_RESET}=claude         Same as ${C_BOLD}--prover${C_RESET}.
+  ${C_BOLD}ARISTOTLE_API_KEY${C_RESET}=... Aristotle key, from https://aristotle.harmonic.fun
+                          (Dashboard ${SYM_ARROW} API Keys). Enables the Aristotle
+                          prover, and lets Claude delegate goals to it.
   ${C_BOLD}MAX_OPEN_AUTO_PRS${C_RESET}=$MAX_OPEN_AUTO_PRS    Don't run if more automated PRs are already open.
   ${C_BOLD}NO_COLOR${C_RESET}=1            Disable colour. ${C_BOLD}FORCE_COLOR${C_RESET}=1 forces it on.
 EOF
@@ -633,6 +706,12 @@ print_plan() {
   kv "Repository" "$UPSTREAM_REPO"
   kv "Checkout"   "./$WORK_DIR $checkout_note"
   kv "Mode"       "$mode_line"
+  if [ "$PROVER" = "aristotle" ]; then
+    kv "Prover"   "Aristotle ${C_DIM}(Harmonic's Lean prover, driven directly)${C_RESET}"
+  else
+    kv "Prover"   "Claude${ARISTOTLE_API_KEY:+ ${C_DIM}(can delegate goals to Aristotle)${C_RESET}}"
+  fi
+  [ -n "$DIRECTIONS" ] && kv "Directions" "$DIRECTIONS"
   if [ "$ask_before" -gt 0 ] || [ "$ask_after" -gt 0 ]; then
     kv "Questions" "$ask_before before Claude runs, $ask_after after"
   fi
@@ -749,6 +828,31 @@ $PROMPT"
   else
     warn "Task '$TASK' has input questions but there's no interactive terminal to ask them; proceeding without answers."
   fi
+fi
+
+# Directions: optional free-text steering for this run, given up front with
+# --direct/-d or the DIRECTIONS env var. In interactive mode we offer to ask for
+# them if none were given; auto mode never prompts (nobody's there to answer), so
+# an unattended run stays exactly as autonomous as it has always been.
+if [ "$DIRECTIONS_GIVEN" != 1 ] && [ "$AUTO" != "1" ] && interactive; then
+  section "Anything specific?"
+  note "Leave this blank to let the agent choose its own target, as usual."
+  printf '  %s%s%s ' "$C_BLUE" "$SYM_ARROW" "$C_RESET"
+  printf '%s' "Directions for this run: "
+  IFS= read -r DIRECTIONS </dev/tty || DIRECTIONS=""
+  [ -n "$DIRECTIONS" ] && DIRECTIONS_GIVEN=1
+fi
+
+# Prepended last, so it sits immediately before the task prompt and after any
+# input-question answers - the directions are the most specific thing the agent
+# has been told, and they outrank the task's own "pick a target" instruction.
+if [ -n "$DIRECTIONS" ]; then
+  PROMPT="Before the task below, here are my specific directions for this run. Follow them,
+and treat them as overriding any instruction in the task to choose a target freely:
+
+$DIRECTIONS
+
+$PROMPT"
 fi
 
 # ===========================================================================
@@ -992,6 +1096,33 @@ step "Run the task with Claude"
 PR_TITLE_FILE="$(mktemp)"; CLEANUP_FILES+=("$PR_TITLE_FILE")
 PR_BODY_FILE="$(mktemp)";  CLEANUP_FILES+=("$PR_BODY_FILE")
 
+# Aristotle hand-off, offered only when a key is actually set - a run without one
+# is never told about a tool it can't use. Aristotle is materially better than
+# Claude at closing Lean goals, so the framing is "delegate the proof", not "try
+# this too".
+if [ -n "${ARISTOTLE_API_KEY:-}" ]; then
+  if resolve_aristotle_helper; then
+    ok "Aristotle available - Claude can delegate proofs to it."
+    PROMPT="$PROMPT
+
+You also have access to Aristotle (Harmonic's Lean 4 prover), which is considerably
+stronger than you are at closing Lean goals. When you need a proof written, prefer
+delegating it: replace the proof body with \`sorry\`, keeping the statement
+byte-for-byte identical, then run
+
+  $ARISTOTLE_HELPER <path/to/File.lean> --repo-root \$PWD
+
+(add --prompt \"...\" to narrow what you're asking for). It prints a unified diff of
+what Aristotle returned and writes NOTHING to the working tree, so read the diff and
+apply the proof yourself - rejecting it if it changes any statement, adds
+declarations, or relies on \`sorry\`. An Aristotle run can take a long time (hours on
+a hard goal); poll it in the foreground until it returns rather than backgrounding
+it. Always verify with \`lake build\` afterwards."
+  else
+    warn "ARISTOTLE_API_KEY is set but aristotle-prove.sh couldn't be found or downloaded; continuing without it."
+  fi
+fi
+
 # Standard PR-text handoff - identical for every task, so it lives here rather than
 # in the task file. Claude writes the PR title and body to these temp files once the
 # work is done and the build is green, or leaves them empty to signal it couldn't
@@ -1021,7 +1152,80 @@ Finally, write a short message telling me how to quit Claude and that this scrip
 will continue automatically once I exit Claude."
 fi
 
-if [ "$AUTO" = "1" ]; then
+if [ "$PROVER" = "aristotle" ]; then
+  # --- Step 6b: Aristotle only, no agent in the proof loop -----------------
+  # Pick targets, hand them straight to Aristotle, apply what comes back, and
+  # let `lake build` be the judge. The PR text is composed from the diff below,
+  # so this path never invokes Claude at all.
+  resolve_aristotle_helper || die "Couldn't find or download Scripts/aristotle-prove.sh."
+
+  TARGETS=()
+  # Directions win when they name real .lean files - that's the whole point of
+  # being able to say "prove X in Y.lean".
+  if [ -n "$DIRECTIONS" ]; then
+    for tok in $DIRECTIONS; do
+      tok="${tok%,}"; tok="${tok%.}"
+      case "$tok" in
+        *.lean) [ -f "$tok" ] && TARGETS+=("$tok") ;;
+      esac
+    done
+  fi
+  # Otherwise: whatever still has a real `sorry` in it. The regex is
+  # word-boundaried on purpose - Physlib's lint tooling is full of `sorryAx`,
+  # `sorryful` and `sorryPseudoCheck`, and a plain substring match picks those
+  # scripts instead of any actual proof. scripts/ is excluded for the same
+  # reason: it's tooling, not physics. Capped, because every file named here is
+  # worked on.
+  if [ "${#TARGETS[@]}" -eq 0 ]; then
+    log "No .lean file named in the directions - looking for files with a real 'sorry'."
+    while IFS= read -r f; do
+      [ -n "$f" ] && TARGETS+=("$f")
+    done < <(grep -rl --include='*.lean' -E '(^|[^a-zA-Z_])sorry([^a-zA-Z_'"'"']|$)' . 2>/dev/null \
+               | grep -vE '/\.lake/|^\./(scripts|docs|\.github)/' | head -3)
+  fi
+  [ "${#TARGETS[@]}" -gt 0 ] || die "Nothing to prove: no .lean file given in --direct, and no 'sorry' found in $PROJECT_NAME."
+
+  log "Handing ${#TARGETS[@]} file(s) to Aristotle: ${TARGETS[*]}"
+  note "This can take a long time - hours, on a hard goal. Output follows."
+  printf '\n'
+  set +e
+  ARISTOTLE_PROMPT="Fill in every sorry in the Lean files in this project. Keep every theorem, lemma and \
+definition STATEMENT byte-for-byte identical - change only the proofs. Do not add new declarations or \
+change imports. Return the complete files.${DIRECTIONS:+ Additional instructions: $DIRECTIONS}"
+  "$ARISTOTLE_HELPER" "${TARGETS[@]}" --repo-root "$PWD" --apply --prompt "$ARISTOTLE_PROMPT"
+  ARISTOTLE_RC=$?
+  set -e
+  [ "$ARISTOTLE_RC" -eq 0 ] || die "Aristotle didn't return a usable proof (exit $ARISTOTLE_RC). Nothing was committed."
+
+  # The build is the only thing standing between Aristotle's output and a PR -
+  # there's no agent here to notice a broken proof, so a failure stops the run.
+  step "Verify the build"
+  set +e
+  lake build
+  ARISTOTLE_BUILD_RC=$?
+  set -e
+  if [ "$ARISTOTLE_BUILD_RC" -ne 0 ]; then
+    warn "The build FAILED with Aristotle's proof in place - not opening a PR."
+    note "The changes are left in ./$WORK_DIR on branch '$BRANCH' if you want to look."
+    exit 1
+  fi
+  ok "Build is green with Aristotle's proof in place."
+
+  # PR text, composed mechanically from the diff - no model involved anywhere on
+  # this path. (We're already inside the checkout; step 7 stages the changes.)
+  ARISTOTLE_FILES="$(git diff --name-only | tr '\n' ' ')"
+  ARISTOTLE_SUBJECT="$(git diff --name-only | head -n1 | xargs basename 2>/dev/null || true)"
+  ARISTOTLE_SUBJECT="${ARISTOTLE_SUBJECT%.lean}"
+  printf 'auto-aristotle(%s): close proof with Aristotle\n' "${ARISTOTLE_SUBJECT:-lean}" >"$PR_TITLE_FILE"
+  {
+    printf '## What changed\n\n'
+    printf 'Proof(s) in `%s` written by [Aristotle](https://aristotle.harmonic.fun), ' "$ARISTOTLE_FILES"
+    printf "Harmonic's Lean 4 prover, run directly by \`physlib-auto-task.sh --prover aristotle\`.\n\n"
+    [ -n "$DIRECTIONS" ] && printf 'Directions given for this run: %s\n\n' "$DIRECTIONS"
+    printf 'No statement was modified - only proof bodies. Verified with `lake build`.\n\n'
+    printf '## Diff stat\n\n```\n%s\n```\n' "$(git diff --stat || true)"
+  } >"$PR_BODY_FILE"
+elif [ "$AUTO" = "1" ]; then
   log "Launching Claude headless on the '$TASK' task; it will work and exit on its own."
   note "Sit tight - this can take a while. Output from Claude follows."
   printf '\n'

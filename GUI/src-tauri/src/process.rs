@@ -154,6 +154,26 @@ pub const ONE_SHOT_SESSION_NOTE: &str = "This is a ONE-SHOT, non-interactive ses
      turns, run it in the foreground (a blocking call) instead, even if that one call takes a long time to \
      return.";
 
+/// Appended to a task prompt only when an Aristotle API key is configured, so
+/// a run without one is never told about a tool it can't use. Aristotle
+/// (Harmonic's Lean prover) is materially better at closing Lean goals than
+/// Claude is, so the framing here is deliberate: delegate the proving, don't
+/// race it.
+///
+/// The wrapper is a script in this repo rather than an MCP server - a
+/// community `lean-aristotle-mcp` exists, but a task run happens under
+/// `--permission-mode bypassPermissions`, and that isn't the place to add an
+/// unvetted third-party dependency.
+pub const ARISTOTLE_TOOL_NOTE: &str = "You also have access to Aristotle (Harmonic's Lean 4 prover), which is \
+     considerably stronger than you are at closing Lean goals. When you need a proof written, prefer delegating \
+     it: replace the proof body with `sorry`, keeping the statement byte-for-byte identical, then run \
+     `Scripts/aristotle-prove.sh <path/to/File.lean> --repo-root <repo root>` (add `--prompt \"...\"` to narrow \
+     what you're asking for). It prints a unified diff of what Aristotle returned and writes NOTHING to the \
+     working tree, so read the diff and apply the proof yourself - rejecting it if it changes any statement, \
+     adds declarations, or relies on `sorry`. An Aristotle run can take a long time (hours on a hard goal); poll \
+     it in the foreground until it returns rather than backgrounding it. Always verify with `lake build` \
+     afterwards.";
+
 /// Spawns `claude -p` in headless JSON-streaming mode, forwarding each
 /// stdout line as `{event}:event` (parsed JSON, or a `{"type":"raw",...}`
 /// wrapper if a line doesn't parse - the exact stream-json schema isn't
@@ -170,6 +190,7 @@ pub fn spawn_claude_streaming(
     prompt: &str,
     cwd: &Path,
     claude_oauth_token: Option<&str>,
+    aristotle_api_key: Option<&str>,
 ) -> std::io::Result<(Child, tokio::task::JoinHandle<()>)> {
     let event = event.into();
     let mut cmd = base_command(
@@ -180,6 +201,11 @@ pub fn spawn_claude_streaming(
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(token) = claude_oauth_token {
         cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+    }
+    // Inherited by `Scripts/aristotle-prove.sh` when Claude runs it - the key
+    // is never written into the prompt, only into the child environment.
+    if let Some(key) = aristotle_api_key {
+        cmd.env("ARISTOTLE_API_KEY", key);
     }
 
     let mut child = cmd.spawn()?;

@@ -82,6 +82,8 @@ pub fn run() {
             commands::tasks::fetch_tasks,
             commands::run_task::start_task_run,
             commands::run_task::confirm_and_open_pr,
+            commands::aristotle::start_aristotle_run,
+            commands::aristotle::verify_aristotle_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

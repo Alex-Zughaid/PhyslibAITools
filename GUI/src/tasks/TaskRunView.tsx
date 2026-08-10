@@ -4,13 +4,13 @@ import { Card } from "../components/Card";
 import { Spinner } from "../components/Spinner";
 import { ActivityFeed } from "./ActivityFeed";
 import { describeEvent, type FeedItem } from "./describeEvent";
-import { InputQuestionsForm } from "./InputQuestionsForm";
+import { PreRunForm, type PreRunValues } from "./PreRunForm";
 import { DiffReview } from "./DiffReview";
-import { buildPromptWithAnswers } from "./parseTask";
-import { confirmAndOpenPr, onEvent, openInBrowser, startTaskRun } from "../lib/tauri";
+import { buildPrompt } from "./parseTask";
+import { confirmAndOpenPr, onEvent, openInBrowser, startAristotleRun, startTaskRun } from "../lib/tauri";
 import type { ParsedTask, RunTaskFinished } from "../lib/types";
 
-type Phase = "questions" | "starting" | "running" | "review" | "not-finished" | "success" | "error";
+type Phase = "pre-run" | "running" | "review" | "not-finished" | "success" | "error";
 
 let feedCounter = 0;
 
@@ -19,6 +19,7 @@ export function TaskRunView({
   workspaceDir,
   maxOpenAutoPrs,
   claudeOauthToken,
+  aristotleApiKey,
   onMinimize,
   onExit,
 }: {
@@ -26,23 +27,29 @@ export function TaskRunView({
   workspaceDir: string;
   maxOpenAutoPrs: number;
   claudeOauthToken: string | null;
+  aristotleApiKey: string | null;
   // Leave the run going and return to the list (the run stays mounted).
   onMinimize: () => void;
   // The run is over (or abandoned) - discard it and return to the list.
   onExit: () => void;
 }) {
-  const [phase, setPhase] = useState<Phase>(task.inputQuestions.length > 0 ? "questions" : "starting");
+  // Every run starts on the pre-run screen now, whether or not the task has
+  // input questions - that's where directions and the prover choice live, and
+  // an optional field nobody can find is one nobody uses. Submitting it
+  // untouched reproduces the old auto-start behaviour exactly.
+  const [phase, setPhase] = useState<Phase>("pre-run");
   const [items, setItems] = useState<FeedItem[]>([]);
   const [branch, setBranch] = useState<string | null>(null);
   const [finished, setFinished] = useState<RunTaskFinished | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [prUrl, setPrUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // Tauri doesn't replay events fired before a listener registers, and
-  // `claude -p` can start emitting stream-json lines within milliseconds -
-  // faster, in the worst case, than the listener-registration round-trip
-  // below. Gate the auto-start path (no input questions) on listeners being
-  // confirmed ready first, the same fix as the Claude login terminal hang.
+  // Tauri doesn't replay events fired before a listener registers, and a run
+  // can start emitting stream-json lines within milliseconds - faster, in the
+  // worst case, than the listener-registration round-trip below. The pre-run
+  // screen makes this near-impossible to hit (a human has to click Start
+  // first), but the gate is kept rather than assuming that: it's the same fix
+  // as the Claude login terminal hang, and it costs nothing.
   const [listenersReady, setListenersReady] = useState(false);
   const startedRef = useRef(false);
 
@@ -73,27 +80,34 @@ export function TaskRunView({
     };
   }, []);
 
-  const start = async (answers: { question: string; answer: string }[]) => {
+  const start = async ({ answers, directions, engine }: PreRunValues) => {
+    if (startedRef.current) return;
+    startedRef.current = true;
     setPhase("running");
     setItems([]);
     setError(null);
     try {
-      const prompt = buildPromptWithAnswers(task.prompt, answers);
-      const started = await startTaskRun({ workspaceDir, taskName: task.name, prompt, maxOpenAutoPrs, claudeOauthToken });
+      const prompt = buildPrompt(task.prompt, answers, directions);
+      // Both paths return the same `RunTaskStarted` and emit the same
+      // `task-run:*` events, so everything below here is engine-agnostic.
+      const started =
+        engine === "aristotle"
+          ? await startAristotleRun({ workspaceDir, taskName: task.name, directions, maxOpenAutoPrs, aristotleApiKey })
+          : await startTaskRun({
+              workspaceDir,
+              taskName: task.name,
+              prompt,
+              maxOpenAutoPrs,
+              claudeOauthToken,
+              aristotleApiKey,
+            });
       setBranch(started.branch);
     } catch (e) {
+      startedRef.current = false;
       setError(String(e));
       setPhase("error");
     }
   };
-
-  useEffect(() => {
-    if (phase === "starting" && listenersReady && !startedRef.current) {
-      startedRef.current = true;
-      void start([]);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, listenersReady]);
 
   // Once the run has reached one of these, there's nothing left running to
   // return to, so leaving discards it rather than minimizing.
@@ -127,17 +141,25 @@ export function TaskRunView({
           // banner brings you straight back here. While Claude is actively
           // working we call that out so it's clear the run isn't cancelled.
           <Button variant="ghost" size="sm" onClick={onMinimize}>
-            {phase === "starting" || phase === "running" ? "← Back to tasks (keeps running)" : "← Back to tasks"}
+            {phase === "running" ? "← Back to tasks (keeps running)" : "← Back to tasks"}
           </Button>
         )}
       </div>
 
       <Card>
-        {phase === "questions" && (
-          <InputQuestionsForm questions={task.inputQuestions} onSubmit={(answers) => start(answers)} onCancel={onExit} />
-        )}
+        {phase === "pre-run" &&
+          (listenersReady ? (
+            <PreRunForm
+              questions={task.inputQuestions}
+              aristotleAvailable={!!aristotleApiKey}
+              onSubmit={start}
+              onCancel={onExit}
+            />
+          ) : (
+            <Spinner label="Getting ready…" />
+          ))}
 
-        {(phase === "starting" || phase === "running") && (
+        {phase === "running" && (
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             <Spinner label={branch ? `Working on branch ${branch}…` : "Starting…"} />
             <ActivityFeed items={items} />

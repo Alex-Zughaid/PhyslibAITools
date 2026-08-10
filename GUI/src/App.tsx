@@ -88,6 +88,7 @@ function App() {
               workspaceDir={config.workspaceDir}
               maxOpenAutoPrs={config.maxOpenAutoPrs}
               claudeOauthToken={config.claudeOauthToken}
+              aristotleApiKey={config.aristotleApiKey}
               onMinimize={() => setViewingRun(false)}
               onExit={() => {
                 setActiveTask(null);

@@ -101,6 +101,7 @@ src-tauri/                Rust backend
       workspace.rs              git fork/clone/branch/diff helpers
       tasks.rs                  task discovery (local / GitHub / bundled)
       run_task.rs                spawns `claude -p`, parses stream-json, PR creation
+      aristotle.rs                the Aristotle-only run path (no agent in the loop)
   resources/tasks-snapshot/  offline fallback copy of Tasks/, refreshed by hand
                              from ../Tasks when it's meaningfully out of date
 ```
@@ -224,6 +225,50 @@ guessing at a patch. Only one fix attempt is made per failure; if it's still
 broken afterward, that's surfaced as a normal error rather than retried
 forever.
 
+### Directing a run, and choosing a prover
+
+Every run now starts on a pre-run screen (`src/tasks/PreRunForm.tsx`), not just
+tasks that declare `input_questions`. It carries three optional things: the
+task's input questions, a free-text **Directions** box, and the choice of
+prover. Submitting it untouched reproduces the previous auto-start behaviour
+exactly - Claude, no directions, agent picks its own target. It's shown
+unconditionally on purpose: a directions box nobody can find is one nobody uses,
+and the cost is a single click.
+
+Prompt assembly lives in one place, `src/tasks/parseTask.ts`'s `buildPrompt`,
+and matches `Scripts/physlib-auto-task.sh`'s wording **byte for byte** so the
+two harnesses send Claude the same thing. Order is: input answers, then
+directions, then the task prompt - directions sit closest to the prompt because
+they're the most specific instruction, and they explicitly override the task's
+own "choose a target" step.
+
+**Aristotle** (Harmonic's Lean 4 prover) is optional and off unless an API key
+is set in Settings (`config.aristotle_api_key`; the fourth, deliberately
+non-gating section in `SetupDashboard.tsx`). The key is pasted into a password
+field and checked against the API - `verify_aristotle_key`, via a cheap
+`aristotle list` call - *before* it's stored, mirroring
+`verify_claude_oauth_token`: a typo'd key accepted silently wouldn't surface
+until a run had already cloned, built, and reached the proving step. With a
+valid key, it's reachable two ways, mirroring the script's `--prover`:
+
+- *Claude delegates to it* - `process::ARISTOTLE_TOOL_NOTE` is appended to the
+  prompt **only** when a key exists, and the key goes into the child's
+  environment for `Scripts/aristotle-prove.sh` to pick up. With no key the
+  prompt never mentions Aristotle at all.
+- *Aristotle alone* - `commands/aristotle.rs`, which never invokes `claude`. It
+  mirrors `run_task.rs`'s shape and emits the *same* `task-run:*` events, so the
+  run view, activity feed, diff review and PR confirmation are reused with no
+  engine-specific branching. `lake build` is the only gate on its output, and the
+  PR text is composed from the diff.
+
+The wrapper script is embedded with `include_str!` from `../Scripts/` rather
+than copied into `resources/`, so a packaged app can't ship a wrapper that's
+drifted from the one in the repo. It's invoked through `bash` (Git Bash on
+Windows, already a tracked prerequisite). Note that Aristotle's `--project-dir`
+uploads the entire directory it's given, so the wrapper stages only the files
+being worked on - pointing it at a built Physlib checkout would upload a
+multi-GB `.lake/`.
+
 ### Setup is re-checked on every launch
 
 Nothing about "setup is done" is trusted from a stale flag. On every launch
@@ -323,6 +368,36 @@ available cores on its own.
 
 ### Known limitations / honest gaps
 
+- **Aristotle wants a different Lean toolchain than Physlib pins.** Its CLI
+  warns on every submit: Physlib is on `leanprover/lean4:v4.32.0`, Aristotle
+  "works best with" `v4.28.0`. Unresolved, and not obviously ours to resolve -
+  downgrading Physlib isn't an option. Treat proof failures with that in mind.
+- **Aristotle never gets `.lake`**, so it works without compiled Mathlib
+  dependencies and says so ("Aristotle works better with access to your
+  project's dependencies"). Sending it isn't practical - it's multiple GB
+  against an ~11 MB source tree. The whole *source* tree is uploaded, which is
+  what makes imports resolve and was itself a bug fix: an earlier version sent
+  only the target files plus the lakefile, and Aristotle correctly complained
+  there was no `Physlib/` directory at all.
+- **The result archive's exact shape is still an assumption.** Submission,
+  auth rejection, staging, the scoped prompt and cancellation have all now been
+  seen against the live API, but no run has yet come back *successful*, so the
+  unpack-and-diff path has only been exercised against a stubbed CLI. It
+  tolerates tar.gz and zip, matches returned files by repo-relative path (not
+  basename - Physlib has many `Basic.lean`s), and reports what it actually got
+  rather than failing silently.
+- **Aristotle may ask interactive questions.** Its CLI prompts on stdin, which
+  a headless run can't answer (`ERROR - Error answering question: EOF`). The
+  prompt now tells it not to ask; the error is non-fatal if it does anyway.
+  `aristotle continue --mode ask` exists if a follow-up flow is ever wanted.
+- **An Aristotle run can't be cancelled from the UI.** Runs are slow (a
+  published case study reports ~8 hours on a hard goal). Both paths stream
+  progress so a run never looks hung, and the wrapper cancels the remote task if
+  the process is interrupted or its timeout (default 2h) expires - but there's
+  no stop button in the app yet.
+- **Aristotle's key is stored in the same plain JSON as the Claude OAuth
+  token**, with the same documented trade-off; OS-keychain storage remains a
+  reasonable follow-up for both.
 - **`claude -p --output-format stream-json`'s exact event schema isn't
   fully documented.** `src/tasks/describeEvent.ts` handles the shapes
   confirmed by a real test run (`system`/`init`, `assistant` with

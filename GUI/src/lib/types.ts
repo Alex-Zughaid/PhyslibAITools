@@ -28,7 +28,13 @@ export interface AppConfig {
   maxOpenAutoPrs: number;
   lastTask: string | null;
   claudeOauthToken: string | null;
+  aristotleApiKey: string | null;
 }
+
+/** Who actually does the proving in a run: Claude working agentically over the
+ * repo, or Aristotle (Harmonic's Lean prover) driven directly with no agent in
+ * the proof loop. Mirrors the script's `--prover`. */
+export type Engine = "claude" | "aristotle";
 
 export interface TaskFile {
   name: string;

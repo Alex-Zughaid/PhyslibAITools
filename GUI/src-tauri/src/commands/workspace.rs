@@ -207,7 +207,9 @@ async fn run_step_with_auto_fix(
         one_shot_note = process::ONE_SHOT_SESSION_NOTE,
     );
 
-    let (mut child, stdout_task) = process::spawn_claude_streaming(app.clone(), &fix_event, &prompt, dir, claude_oauth_token)
+    // No Aristotle key here on purpose: this is the build-repair path, which
+    // has no proving to do.
+    let (mut child, stdout_task) = process::spawn_claude_streaming(app.clone(), &fix_event, &prompt, dir, claude_oauth_token, None)
         .map_err(|e| format!("{failure_summary}, and couldn't start Claude to fix it: {e}"))?;
     // `claude -p` sessions have been observed elsewhere in this app to hang
     // (see auth_claude.rs's history). Without a bound here, that would wedge

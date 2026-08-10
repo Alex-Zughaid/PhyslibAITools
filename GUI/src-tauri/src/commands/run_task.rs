@@ -40,6 +40,11 @@ pub struct RunTaskRequest {
     /// was detected instead, in which case `claude` picks its own
     /// credentials up automatically and needs nothing from us here.
     pub claude_oauth_token: Option<String>,
+    /// Optional. When present, Claude is told it can delegate proofs to
+    /// Aristotle (see `process::ARISTOTLE_TOOL_NOTE`) and the key is put in
+    /// its environment for `Scripts/aristotle-prove.sh` to pick up. When
+    /// absent the prompt never mentions Aristotle at all.
+    pub aristotle_api_key: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -61,8 +66,10 @@ pub struct RunTaskFinished {
 
 /// Refuses to start if too many `auto-`-prefixed PRs are already open
 /// upstream, so a fleet of GUI users can't flood the maintainers - the same
-/// politeness cap `physlib-auto-task.sh` enforces.
-async fn check_open_pr_cap(max_open_auto_prs: u32) -> Result<(), String> {
+/// politeness cap `physlib-auto-task.sh` enforces. Shared with the
+/// Aristotle-only run path (see `commands/aristotle.rs`), which is subject to
+/// exactly the same cap.
+pub(crate) async fn check_open_pr_cap(max_open_auto_prs: u32) -> Result<(), String> {
     let (ok, stdout, _) = process::run_captured(
         "gh",
         &["pr", "list", "--repo", workspace::UPSTREAM_REPO, "--state", "open", "--limit", "1000", "--json", "title"],
@@ -102,9 +109,15 @@ pub async fn start_task_run(app: AppHandle, req: RunTaskRequest) -> Result<RunTa
     std::fs::write(&pr_title_file, "").map_err(|e| e.to_string())?;
     std::fs::write(&pr_body_file, "").map_err(|e| e.to_string())?;
 
+    let aristotle_note = match req.aristotle_api_key.as_deref() {
+        Some(key) if !key.trim().is_empty() => format!("{}\n\n", process::ARISTOTLE_TOOL_NOTE),
+        _ => String::new(),
+    };
+
     let full_prompt = format!(
         "{prompt}\n\n\
          {one_shot_note}\n\n\
+         {aristotle_note}\
          Finally, once the task is complete and the project still builds, write the \
          pull-request text so the app can open the PR for me:\n\
          \x20 - A PR title in EXACTLY this format: auto-task(<subject>): <description>\n\
@@ -115,11 +128,21 @@ pub async fn start_task_run(app: AppHandle, req: RunTaskRequest) -> Result<RunTa
          keeping the build green, leave both files empty so the app knows not to open a PR.",
         prompt = req.prompt,
         one_shot_note = process::ONE_SHOT_SESSION_NOTE,
+        aristotle_note = aristotle_note,
         title_path = pr_title_file.display(),
         body_path = pr_body_file.display(),
     );
 
-    spawn_claude_run(app, dir, branch.clone(), full_prompt, pr_title_file, pr_body_file, req.claude_oauth_token);
+    spawn_claude_run(
+        app,
+        dir,
+        branch.clone(),
+        full_prompt,
+        pr_title_file,
+        pr_body_file,
+        req.claude_oauth_token,
+        req.aristotle_api_key,
+    );
     Ok(RunTaskStarted { branch })
 }
 
@@ -131,26 +154,33 @@ fn spawn_claude_run(
     pr_title_file: PathBuf,
     pr_body_file: PathBuf,
     claude_oauth_token: Option<String>,
+    aristotle_api_key: Option<String>,
 ) {
     tokio::spawn(async move {
-        let (mut child, stdout_task) =
-            match process::spawn_claude_streaming(app.clone(), "task-run", &prompt, &dir, claude_oauth_token.as_deref()) {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = app.emit(
-                        "task-run:finished",
-                        RunTaskFinished {
-                            could_finish: false,
-                            branch,
-                            diff: None,
-                            pr_title: None,
-                            pr_body: None,
-                            error: Some(format!("Couldn't start Claude: {e}")),
-                        },
-                    );
-                    return;
-                }
-            };
+        let (mut child, stdout_task) = match process::spawn_claude_streaming(
+            app.clone(),
+            "task-run",
+            &prompt,
+            &dir,
+            claude_oauth_token.as_deref(),
+            aristotle_api_key.as_deref(),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = app.emit(
+                    "task-run:finished",
+                    RunTaskFinished {
+                        could_finish: false,
+                        branch,
+                        diff: None,
+                        pr_title: None,
+                        pr_body: None,
+                        error: Some(format!("Couldn't start Claude: {e}")),
+                    },
+                );
+                return;
+            }
+        };
 
         let _ = child.wait().await;
         let _ = stdout_task.await;

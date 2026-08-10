@@ -1,3 +1,4 @@
+pub mod aristotle;
 pub mod auth_claude;
 pub mod auth_github;
 pub mod run_task;

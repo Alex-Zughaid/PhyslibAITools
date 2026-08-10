@@ -52,7 +52,23 @@ export const startTaskRun = (req: {
   prompt: string;
   maxOpenAutoPrs: number;
   claudeOauthToken: string | null;
+  aristotleApiKey: string | null;
 }) => invoke<RunTaskStarted>("start_task_run", { req });
+
+/** Checks a pasted Aristotle key against the API before it's saved, the
+ * counterpart to `verifyClaudeOauthToken`. Rejects with a readable reason. */
+export const verifyAristotleKey = (key: string) => invoke<void>("verify_aristotle_key", { key });
+
+/** The Aristotle-only path: no Claude in the proof loop. Emits the same
+ * `task-run:*` events as `startTaskRun`, so the run view, activity feed and
+ * diff review are shared unchanged. */
+export const startAristotleRun = (req: {
+  workspaceDir: string;
+  taskName: string;
+  directions: string;
+  maxOpenAutoPrs: number;
+  aristotleApiKey: string | null;
+}) => invoke<RunTaskStarted>("start_aristotle_run", { req });
 
 export const confirmAndOpenPr = (req: { workspaceDir: string; branch: string; title: string; body: string }) =>
   invoke<PrResult>("confirm_and_open_pr", { req });

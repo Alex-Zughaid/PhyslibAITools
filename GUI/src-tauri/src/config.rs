@@ -43,6 +43,15 @@ pub struct AppConfig {
     /// storage is a reasonable follow-up, not required for v1.
     #[serde(default)]
     pub claude_oauth_token: Option<String>,
+    /// Aristotle (Harmonic's Lean prover) API key, from
+    /// https://aristotle.harmonic.fun - Dashboard -> API Keys. Passed to child
+    /// processes as `ARISTOTLE_API_KEY`. Optional: with no key, the Aristotle
+    /// prover option is disabled and Claude runs are never told about it, so
+    /// everything behaves exactly as it did before. Stored in the same plain
+    /// JSON as `claude_oauth_token` above, with the same trade-off - see that
+    /// field's note and GUI/README.md.
+    #[serde(default)]
+    pub aristotle_api_key: Option<String>,
 }
 
 fn default_max_open_auto_prs() -> u32 {
@@ -57,6 +66,7 @@ impl Default for AppConfig {
             max_open_auto_prs: default_max_open_auto_prs(),
             last_task: None,
             claude_oauth_token: None,
+            aristotle_api_key: None,
         }
     }
 }
