@@ -36,6 +36,7 @@ import argparse
 import difflib
 import hashlib
 import json
+import os
 import random
 import re
 import subprocess
@@ -47,7 +48,9 @@ from pathlib import Path
 
 import yaml
 
-PHYSLIB = Path("/Users/josephsmith/Documents/GitHub/JTSphyslib/Physlib")
+# Overridable with --physlib-path or the PHYSLIB_PATH env var; this is just the
+# fallback for whoever hasn't set either.
+PHYSLIB = Path(os.environ.get("PHYSLIB_PATH", "~/Desktop/physlib/Physlib")).expanduser()
 MODEL = "qwen3.5:9b"
 ROUNDS = 10
 ATTEMPTS = 0  # 0 = sweep for ever, until Ctrl-C
@@ -736,10 +739,18 @@ def choose_file(args) -> Path:
 
 
 def main() -> None:
+    global PHYSLIB
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--file", help="Specific .lean file (default: sweep them all)")
+    ap.add_argument(
+        "--physlib-path",
+        type=Path,
+        default=PHYSLIB,
+        help="Path to the Physlib/ sources subfolder inside your local checkout "
+             f"(default: $PHYSLIB_PATH, or {PHYSLIB})",
+    )
     ap.add_argument("--model", default=MODEL)
     ap.add_argument(
         "--num-ctx",
@@ -786,6 +797,12 @@ def main() -> None:
     args.report = args.report.expanduser()
     if args.check:
         sys.exit(check_report(args.report))
+
+    PHYSLIB = args.physlib_path.expanduser().resolve()
+    if not PHYSLIB.is_dir():
+        ap.error(f"--physlib-path {PHYSLIB} is not a directory; pass --physlib-path "
+                 f"or set PHYSLIB_PATH to your local Physlib/ sources subfolder")
+
     if args.num_ctx <= RESERVED_TOKENS:
         ap.error(f"--num-ctx must exceed the {RESERVED_TOKENS} tokens reserved for "
                  f"the reply, or nothing fits; the default is {NUM_CTX}")
